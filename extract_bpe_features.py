@@ -13,7 +13,13 @@ changes), so the single-nt vs domain-BPE comparison is matched-capacity. This is
 the HEADLINE comparison of the experiment (Evo2 is only a far-larger reference):
 
     python extract_bpe_features.py --tokenizer single_nt
+    python extract_bpe_features.py --tokenizer kmer --kmer-k 4        # fixed-chunk control
     python extract_bpe_features.py --tokenizer domain_bpe --bpe-vocab 1024
+
+The single-nt -> kmer -> domain_bpe ladder separates "chunks beat single letters"
+from "LEARNED chunks beat fixed chunks" (the paper's actual claim). Each run also
+logs intrinsic diagnostics (held-out bits-per-residue, Zipf exponent, nt/token)
+into the .meta.json — see report_intrinsic.py.
 
 Everything here runs on CPU (laptop OK) for a dev-sized corpus; a GPU just makes
 the LM training faster (--device cuda).
@@ -48,8 +54,9 @@ from microbe_bpe.genome_corpus import (
     read_dna,
     window_dna,
 )
+from microbe_bpe.intrinsic import compression_ratio, token_counts, zipf_exponent
 from microbe_bpe.tiny_lm import LMConfig, eval_bits_per_residue, genome_embedding, train_lm
-from microbe_bpe.tokenizers import DomainBPETrainer, NucleotideTokenizer
+from microbe_bpe.tokenizers import DomainBPETrainer, KmerTokenizer, NucleotideTokenizer
 
 
 def gather_windows(
@@ -61,17 +68,19 @@ def gather_windows(
     split: str | None,
     split_level: str | None,
     sampling: str = "even",
-) -> tuple[list[str], list[tuple[int, list[str]]]]:
-    """Return (training_windows, [(bacdive_id, genome_windows), ...]).
+) -> tuple[list[str], list[str], list[tuple[int, list[str]]]]:
+    """Return (training_windows, heldout_windows, [(bacdive_id, genome_windows), ...]).
 
     `training_windows` is the flat pool used to train the tokenizer + LM
-    (optionally restricted to one split). The per-genome list is used for
-    feature extraction and always covers every cached genome.
+    (optionally restricted to one split). `heldout_windows` are windows from
+    genomes NOT in that split (empty when split is None) — used for an honest
+    held-out bits-per-residue. The per-genome list covers every cached genome.
     """
     df = manifest.ok
     split_col = f"{split_level}_split" if split_level else None
 
     train_pool: list[str] = []
+    heldout_pool: list[str] = []
     per_genome: list[tuple[int, list[str]]] = []
     for row in df.itertuples():
         bid = int(row.bacdive_id)
@@ -83,15 +92,16 @@ def gather_windows(
         in_train = True
         if split and split_col and hasattr(row, split_col):
             in_train = getattr(row, split_col) == split
-        if in_train:
-            train_pool.extend(wins)
-    return train_pool, per_genome
+        (train_pool if in_train else heldout_pool).extend(wins)
+    return train_pool, heldout_pool, per_genome
 
 
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--tokenizer", choices=["domain_bpe", "single_nt"], default="domain_bpe")
+    p.add_argument("--tokenizer", choices=["domain_bpe", "single_nt", "kmer"], default="domain_bpe")
     p.add_argument("--bpe-vocab", type=int, default=1024, help="domain-BPE vocab size")
+    p.add_argument("--kmer-k", type=int, default=4,
+                   help="k for --tokenizer kmer (fixed non-overlapping k-mers; vocab=4**k)")
     p.add_argument("--data-dir", type=Path, default=DEFAULT_DATA_DIR)
     p.add_argument("--out", type=Path, default=None, help="output npz (default data/<tok>_features.npz)")
     # windowing — keep --window <= --max-len so single-nt is never truncated
@@ -145,7 +155,7 @@ def main() -> None:
         sys.exit("empty corpus — run build_genome_corpus.py first")
 
     split = "train" if args.train_split == "train" else None
-    train_pool, per_genome = gather_windows(
+    train_pool, heldout_pool, per_genome = gather_windows(
         manifest,
         window=args.window, stride=args.stride,
         max_windows_per_genome=(args.max_windows or None),
@@ -155,12 +165,15 @@ def main() -> None:
         random.shuffle(train_pool)
         train_pool = train_pool[: args.max_train_windows]
     print(f"training pool: {len(train_pool):,} windows ({args.window}bp); "
-          f"{len(per_genome)} genomes to embed")
+          f"held-out: {len(heldout_pool):,}; {len(per_genome)} genomes to embed")
 
     # 1. tokenizer
     if args.tokenizer == "single_nt":
         tokenizer = NucleotideTokenizer()
         tok_name = "single_nt"
+    elif args.tokenizer == "kmer":
+        tokenizer = KmerTokenizer(k=args.kmer_k)
+        tok_name = tokenizer.name
     else:
         print(f"training domain BPE (vocab={args.bpe_vocab}) ...")
         tokenizer = DomainBPETrainer(vocab_size=args.bpe_vocab).train_on_sequences(
@@ -182,8 +195,16 @@ def main() -> None:
     )
     print(f"  LM: {stats['params']:,} params, final_loss={stats['final_loss']}")
 
-    bpr = eval_bits_per_residue(model, tokenizer, train_pool[:2000], device=device)
-    print(f"  bits/residue (train-pool diagnostic): {bpr:.4f}")
+    # Intrinsic diagnostics — the metrics the tokenization-trap paper argues about.
+    eval_pool = heldout_pool if heldout_pool else train_pool  # honest held-out if available
+    bpr = eval_bits_per_residue(model, tokenizer, eval_pool[:2000], device=device)
+    bpr_train = eval_bits_per_residue(model, tokenizer, train_pool[:2000], device=device)
+    counts = token_counts(tokenizer, train_pool[:5000])
+    zipf = zipf_exponent(counts)
+    compression = compression_ratio(tokenizer, train_pool[:5000])
+    eval_kind = "held-out" if heldout_pool else "train-pool (no held-out split)"
+    print(f"  bits/residue ({eval_kind}): {bpr:.4f}  | Zipf exp: {zipf:.3f}  | "
+          f"nt/token: {compression:.2f}")
 
     # 3. extract per-genome features
     print("extracting genome embeddings ...")
@@ -211,7 +232,13 @@ def main() -> None:
         "n_genomes": len(ids),
         "window": args.window, "stride": args.stride, "max_windows": args.max_windows,
         "sampling": args.sampling,
-        "lm": stats, "bits_per_residue_diag": round(float(bpr), 4),
+        "lm": stats,
+        # intrinsic, tokenizer-agnostic endpoints (the paper's actual claim)
+        "bits_per_residue": round(float(bpr), 4),
+        "bits_per_residue_held_out": bool(heldout_pool),
+        "bits_per_residue_train": round(float(bpr_train), 4),
+        "zipf_exponent": round(float(zipf), 4),
+        "nt_per_token": round(float(compression), 4),
         "train_split": args.train_split, "split_level": args.split_level,
         # fairness bookkeeping: with window<=max_len both tokenizers see the same
         # nucleotides over the same #steps, so they are residue-matched.

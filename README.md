@@ -7,14 +7,22 @@ This repo connects two prior projects:
 - [**microbe-foundation**](https://github.com/miyu-horiuchi/microbe-foundation) — a feature-agnostic, multi-task benchmark that predicts 21 microbial traits from genome features, with strict species/genus/family holdouts and a leaderboard.
 - [**BPE / "The Tokenization Trap"**](https://github.com/miyu-horiuchi/BPE) — the claim that single-residue tokenization gives protein/genome LMs a flat, non-Zipfian token distribution that starves scaling, and that *domain-adaptive BPE* restores language-like statistics and better modelling at fixed size.
 
-The paper's evidence is intrinsic (Zipf exponents, bits-per-residue, a synthetic probe). **microbe-bpe asks the downstream question:** on real microbial genomes, does the tokenizer change what a model can predict about an organism? To answer that *causally*, the headline is a **matched-capacity A/B test where only the tokenizer differs**:
+The paper's claim is fundamentally about **language-model efficiency**, so microbe-bpe reports two tiers of evidence on the same models:
+
+- **Primary (intrinsic, GPU-free, label-free):** does domain-BPE compress microbial DNA better (lower **bits-per-residue**) with more language-like (**Zipfian**) token statistics than single-nt, with k-mers in between? Plus a **GC-content positive-control probe**. See `report_intrinsic.py → results/intrinsic.md`. This is the cleanest, confound-free test and runs on a laptop.
+- **Secondary (downstream):** does any intrinsic advantage *transfer* to predicting microbial traits? This is harder and noisier (organism traits are largely about gene content), so it's a transfer check, not the headline.
+
+To keep both *causal*, the comparison is a **matched-capacity A/B test where only the tokenizer differs**:
 
 | Method | Tokenization | Scale | Role |
 |---|---|---|---|
-| **single-nt** | single nucleotide | tiny TinyGPT, trained here | **headline control** |
+| **single-nt** | single nucleotide | tiny TinyGPT, trained here | **headline control** (the "trap") |
+| **k-mer** | fixed non-overlapping k-base chunks | **same TinyGPT, same training** | **fair middle rung** (chunks, but not *learned*) |
 | **domain BPE** | BPE merges learned on microbial DNA | **same TinyGPT, same training** | **headline method** (the tokenization-trap claim) |
 | Evo2 (mean) | single nucleotide (StripedHyena2) | 1B–40B, pretrained on 8.8T tokens | reference ceiling (single-residue) |
 | Evo2-BPE | Evo2 embeddings pooled along BPE word boundaries | same Evo2 | reference: does BPE composition help a single-nt model? |
+
+The `single-nt → k-mer → domain-BPE` ladder is deliberate: it separates *"chunks beat single letters"* from *"**learned** chunks beat fixed chunks"* — the latter is the paper's actual claim.
 
 Because `single-nt` and `domain BPE` share the same architecture, the same windows, and **residue-matched** training (see below), the *only* difference between them is how the DNA is chopped — so any downstream gap is attributable to tokenization, not scale/data/architecture. Evo2 (billions of params, 8.8T-token pretraining) is reported as a *reference*, never as a controlled comparison.
 
@@ -69,7 +77,7 @@ this repo with `git clone --recurse-submodules <url>` to get it in one step.
 bash scripts/run_smoke.sh
 ```
 
-Builds a tiny demo corpus (6 reference genomes), trains the single-nt and domain-BPE TinyGPTs, and writes **mock** Evo2 feature files (mean + BPE pooling) — proving the pipeline end-to-end. The demo `bacdive_id`s are synthetic, so they don't join microbe-foundation's labels; the downstream `model.py` step needs the real corpus below.
+Builds a tiny demo corpus (6 reference genomes), trains the single-nt / k-mer / domain-BPE TinyGPTs, writes **mock** Evo2 feature files, and prints `results/intrinsic.md` — proving the pipeline end-to-end (even on the demo, the Zipf exponent already shows single-nt ≈ flat vs domain-BPE ≈ language-like). The demo `bacdive_id`s are synthetic, so they don't join microbe-foundation's labels; the downstream `model.py` step needs the real corpus below.
 
 ### 2. Real comparison (on a CUDA GPU box)
 
@@ -99,22 +107,29 @@ or step by step:
 
 ```bash
 python build_genome_corpus.py --limit 500          # full (uncapped) genomes
-# headline pair — note --window <= --max-len keeps them residue-matched, and
+# matched-capacity ladder — --window <= --max-len keeps them residue-matched, and
 # --train-split train (the default) means no test genomes leak into pretraining:
 python extract_bpe_features.py --tokenizer single_nt  --window 512 --max-len 512 --steps 1500 --device cuda
+python extract_bpe_features.py --tokenizer kmer --kmer-k 4 --window 512 --max-len 512 --steps 1500 --device cuda
 python extract_bpe_features.py --tokenizer domain_bpe --bpe-vocab 1024 --window 512 --max-len 512 --steps 1500 --device cuda
 # references (Evo2):
 python extract_evo2_features.py --pooling mean --model evo2_7b --layer blocks.28.mlp.l3
 python extract_evo2_features.py --pooling bpe  --model evo2_7b --layer blocks.28.mlp.l3
-python run_comparison.py --epochs 30 --splits species genus family --seeds 0 1 2
+python report_intrinsic.py                          # PRIMARY: results/intrinsic.md
+python run_comparison.py --epochs 30 --splits species genus family --seeds 0 1 2  # secondary
 ```
 
-Outputs land in `results/comparison.md` (headline `single_nt` vs `domain_bpe`, plus Evo2 references) and `results/leaderboard.md` (microbe-foundation's leaderboard over all runs).
+Outputs: **`results/intrinsic.md`** (primary — bits/residue, Zipf, nt/token, GC probe per method), `results/comparison.md` (secondary — trait prediction across the ladder + Evo2 references), and `results/leaderboard.md`.
 
 ---
 
-## What the comparison reports
+## What gets reported
 
+**Primary — `results/intrinsic.md` (`report_intrinsic.py`, no GPU/labels):**
+- **bits-per-residue** (held-out when a split is set), **Zipf exponent**, and **nt/token** (compression) per method — the paper's actual claim, tested confound-free.
+- **GC-content probe**: cross-validated R² predicting each genome's GC from its frozen features — a positive control that signal exists.
+
+**Secondary — `results/comparison.md` (`run_comparison.py`):**
 - **Mean per-head test score** for each method on each split (species/genus/family), reported as **mean ± std over seeds** so you can see the noise floor.
 - **Headline contrast Δ(domain_bpe − single_nt) by trait class**: the per-head gap, aggregated over *machinery* traits (gene-content / functional: pathogenicity, AMR, cultivation, metabolites…) vs *compositional* traits (bulk-sequence: gram stain, oxygen, temperature…). The paper predicts any tokenization benefit concentrates on machinery phenotypes — averaging all 21 heads together would wash that out, so we break it out. A two-sided **Wilcoxon signed-rank p-value** across the heads in each class is reported when `scipy` is installed and there are ≥6 heads.
 - **Full per-head table** for the headline pair (plus the Evo2 references) on the species split.
@@ -138,13 +153,15 @@ A bonus bits-per-residue diagnostic (the paper's intrinsic compression metric) i
 ```
 microbe_bpe/
   genome_corpus.py     # fetch + window + cache genome DNA (shared input)
-  tokenizers.py        # single-nt + domain-adaptive BPE (DNA), from the BPE repo
+  tokenizers.py        # single-nt + k-mer + domain-adaptive BPE (DNA)
   tiny_lm.py           # TinyGPT genome LM + pooled feature extraction
+  intrinsic.py         # bits/residue helpers, Zipf exponent, compression, GC
   mf_bridge.py         # locate/reuse the microbe-foundation checkout
 build_genome_corpus.py # step 1: shared DNA corpus
-extract_bpe_features.py# step 2: domain-BPE + single-nt features
+extract_bpe_features.py# step 2: single-nt / k-mer / domain-BPE features (+intrinsic meta)
 extract_evo2_features.py# step 3: Evo2 features (GPU) or --mock (CPU)
-run_comparison.py      # step 4: drive model.py + leaderboard, summarize
+report_intrinsic.py    # PRIMARY endpoint: intrinsic table + GC probe (no GPU/labels)
+run_comparison.py      # secondary endpoint: drive model.py + leaderboard, summarize
 microbe-foundation/    # git submodule: the benchmark, model.py, leaderboard.py
 scripts/               # setup.sh, run_smoke.sh, run_evo2_gpu.sh
 tests/                 # CPU-only unit tests

@@ -41,6 +41,11 @@ python extract_bpe_features.py --tokenizer single_nt \
   --window "$WINDOW" --max-len "$MAXLEN" --stride $((WINDOW/2)) --max-windows "$MAXWIN" \
   --steps "$STEPS" --device cuda
 
+echo "== 2b. k-mer control features (fixed chunks; train-split only) =="
+python extract_bpe_features.py --tokenizer kmer --kmer-k 4 \
+  --window "$WINDOW" --max-len "$MAXLEN" --stride $((WINDOW/2)) --max-windows "$MAXWIN" \
+  --steps "$STEPS" --device cuda
+
 echo "== 3. domain-BPE features (train-split only) =="
 python extract_bpe_features.py --tokenizer domain_bpe --bpe-vocab 1024 \
   --window "$WINDOW" --max-len "$MAXLEN" --stride $((WINDOW/2)) --max-windows "$MAXWIN" \
@@ -54,8 +59,11 @@ echo "== 4b. Evo2 features — BPE-boundary pool (byte-pair embeds of Evo2) =="
 python extract_evo2_features.py --pooling bpe --model "$EVO2_MODEL" --layer "$EVO2_LAYER" \
   --window 8192 --stride 8192 --max-windows 16
 
-echo "== 5. downstream comparison (headline: single_nt vs domain_bpe; Evo2 as reference) =="
+echo "== 5. intrinsic report (bits/residue, Zipf, nt/token, GC probe — GPU-free endpoint) =="
+python report_intrinsic.py
+
+echo "== 6. downstream comparison (secondary endpoint; Evo2 as reference) =="
 python run_comparison.py --epochs "$EPOCHS" --splits species genus family --seeds $SEEDS
 
 echo
-echo "Done. See results/comparison.md and results/leaderboard.md"
+echo "Done. Primary: results/intrinsic.md  |  Secondary: results/comparison.md + results/leaderboard.md"

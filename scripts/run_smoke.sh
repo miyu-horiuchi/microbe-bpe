@@ -20,15 +20,24 @@ echo "== 3. single-nucleotide control features =="
 python extract_bpe_features.py --tokenizer single_nt \
   --window 512 --stride 512 --max-windows 24 --steps 80 --d-model 128 --max-len 512
 
+echo "== 3b. k-mer control features (fixed chunks) =="
+python extract_bpe_features.py --tokenizer kmer --kmer-k 4 \
+  --window 512 --stride 512 --max-windows 24 --steps 80 --d-model 128 --max-len 512
+
 echo "== 4. Evo2 MOCK features — mean pool (k-mer stand-in; NOT real Evo2) =="
 python extract_evo2_features.py --mock --pooling mean --window 512 --stride 512 --max-windows 24
 
 echo "== 5. Evo2 MOCK features — BPE pool (byte-pair stand-in; NOT real Evo2) =="
 python extract_evo2_features.py --mock --pooling bpe --window 512 --stride 512 --max-windows 24
 
+echo "== 6. intrinsic report (bits/residue, Zipf, nt/token, GC probe) =="
+python report_intrinsic.py
+
 echo
 echo "Smoke complete. Feature files:"
 ls -la data/*features*.npz
 echo
-echo "Next: on a CUDA GPU box build the real corpus from microbe-foundation"
-echo "accessions, run extract_evo2_features.py (no --mock), then run_comparison.py."
+echo "See results/intrinsic.md (GPU-free, label-free — the cleanest test of the"
+echo "tokenization-trap claim). Next: on a CUDA GPU box build the real corpus from"
+echo "microbe-foundation accessions, run extract_evo2_features.py (no --mock), then"
+echo "run_comparison.py for the downstream trait endpoint."

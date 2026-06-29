@@ -69,6 +69,62 @@ class NucleotideTokenizer:
 
 
 @dataclass
+class KmerTokenizer:
+    """Fixed non-overlapping k-mers — the 'naive multi-nucleotide' middle rung.
+
+    Single-nt chops into 1-base tokens; domain-BPE chops into *learned* variable-
+    length tokens. K-mer sits between them: fixed-length k-base chunks (like DNABERT
+    k-mers, but non-overlapping so it's a clean tokenization). Comparing single-nt
+    -> kmer -> domain-BPE separates 'chunks beat letters' from 'LEARNED chunks beat
+    fixed chunks' — the latter is what the tokenization-trap paper actually claims.
+
+    Vocab = SPECIAL + every ACGT k-mer (4**k). Any chunk containing a non-ACGT base
+    (e.g. N) maps to <unk>. A trailing remainder shorter than k is dropped.
+    """
+
+    k: int = 4
+    name: str = ""
+
+    def __post_init__(self) -> None:
+        if self.k < 1:
+            raise ValueError("k must be >= 1")
+        if not self.name:
+            self.name = f"kmer_{self.k}"
+        bases = "ACGT"
+        kmers: list[str] = [""]
+        for _ in range(self.k):
+            kmers = [p + b for p in kmers for b in bases]
+        self._stoi = {km: i + len(SPECIAL) for i, km in enumerate(kmers)}
+        self._itos = {i: km for km, i in self._stoi.items()}
+        for i, tok in enumerate(SPECIAL):
+            self._itos[i] = tok
+        self._unk = SPECIAL.index("<unk>")
+
+    @property
+    def vocab_size(self) -> int:
+        return len(SPECIAL) + 4 ** self.k
+
+    def _chunks(self, sequence: str) -> list[str]:
+        s = sequence.upper()
+        n = (len(s) // self.k) * self.k
+        return [s[i : i + self.k] for i in range(0, n, self.k)]
+
+    def tokenize(self, sequence: str) -> list[str]:
+        return [c if c in self._stoi else "<unk>" for c in self._chunks(sequence)]
+
+    def encode(self, sequence: str) -> list[int]:
+        return [self._stoi.get(c, self._unk) for c in self._chunks(sequence)]
+
+    def encode_with_offsets(self, sequence: str) -> tuple[list[int], list[tuple[int, int]]]:
+        ids = self.encode(sequence)
+        offsets = [(i * self.k, i * self.k + self.k) for i in range(len(ids))]
+        return ids, offsets
+
+    def decode(self, ids: list[int]) -> str:
+        return "".join(self._itos.get(i, "") for i in ids if self._itos.get(i, "") not in SPECIAL)
+
+
+@dataclass
 class HuggingFaceBPETokenizer:
     """Wrapper around a trained/loaded HF `tokenizers` BPE model."""
 
@@ -148,6 +204,8 @@ def load_tokenizer(kind: str, artifacts_dir: Path | None = None) -> SequenceToke
     """Load a tokenizer by kind: 'single_nt' or a saved domain-BPE directory name."""
     if kind == "single_nt":
         return NucleotideTokenizer()
+    if kind.startswith("kmer_"):
+        return KmerTokenizer(k=int(kind.split("_", 1)[1]))
     if artifacts_dir is None:
         raise ValueError(f"artifacts_dir required to load BPE tokenizer {kind!r}")
     path = artifacts_dir / kind

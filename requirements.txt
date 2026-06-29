@@ -22,6 +22,7 @@ biopython>=1.83
 requests>=2.32
 python-dotenv>=1.0
 
-# --- plots + stats for the comparison report (optional but recommended) ---
+# --- plots + stats for the comparison/intrinsic reports ---
 matplotlib>=3.8
-scipy>=1.11  # enables the Wilcoxon signed-rank p-value in run_comparison.py
+scipy>=1.11             # Wilcoxon signed-rank p-value in run_comparison.py
+scikit-learn>=1.4      # GC positive-control probe in report_intrinsic.py

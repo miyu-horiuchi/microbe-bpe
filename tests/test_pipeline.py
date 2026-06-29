@@ -10,8 +10,9 @@ import random
 import numpy as np
 
 from microbe_bpe.genome_corpus import contigs_to_genome, normalize_dna, window_dna
+from microbe_bpe.intrinsic import compression_ratio, gc_content, token_counts, zipf_exponent
 from microbe_bpe.tiny_lm import LMConfig, genome_embedding, train_lm
-from microbe_bpe.tokenizers import DomainBPETrainer, NucleotideTokenizer
+from microbe_bpe.tokenizers import DomainBPETrainer, KmerTokenizer, NucleotideTokenizer
 
 
 def _random_dna(n: int, seed: int = 0) -> str:
@@ -130,3 +131,42 @@ def test_bpe_bag_mock_vector():
     v = _bpe_bag_vector(seqs[0], tok)
     assert v.shape == (tok.vocab_size,)
     assert abs(float(v.sum()) - 1.0) < 1e-5
+
+
+def test_kmer_tokenizer():
+    tok = KmerTokenizer(k=3)
+    assert tok.name == "kmer_3"
+    assert tok.vocab_size == 4 + 4 ** 3  # SPECIAL + 4^k
+    ids = tok.encode("ACGTAA")  # two clean 3-mers: ACG, TAA
+    assert len(ids) == 2
+    # trailing remainder shorter than k is dropped
+    assert len(tok.encode("ACGTA")) == 1
+    # offsets are fixed k-base spans, contiguous from 0
+    ids2, offs = tok.encode_with_offsets("ACGTAA")
+    assert offs == [(0, 3), (3, 6)]
+    # non-ACGT chunk -> <unk>, but still one token
+    assert len(tok.encode("ACN")) == 1
+    # same chunk -> same id (deterministic)
+    assert tok.encode("ACGACG") == [tok.encode("ACG")[0]] * 2
+
+
+def test_zipf_and_compression():
+    seqs = [_random_dna(400, seed=i) for i in range(40)]
+    nt = NucleotideTokenizer()
+    bpe = DomainBPETrainer(vocab_size=256).train_on_sequences(seqs, name="domain_bpe_256")
+    # single-nt compresses 1 nt/token; BPE should merge -> > 1
+    assert abs(compression_ratio(nt, seqs) - 1.0) < 1e-9
+    assert compression_ratio(bpe, seqs) > 1.0
+    # single-nt token stats are ~flat (only 4 symbols); BPE is more Zipfian
+    z_nt = zipf_exponent(token_counts(nt, seqs))
+    z_bpe = zipf_exponent(token_counts(bpe, seqs))
+    assert z_bpe > z_nt
+    # zipf needs >= 3 distinct tokens
+    assert np.isnan(zipf_exponent({1: 10, 2: 5}))
+
+
+def test_gc_content():
+    assert abs(gc_content("GCGC") - 1.0) < 1e-9
+    assert abs(gc_content("ATAT") - 0.0) < 1e-9
+    assert abs(gc_content("ACGT") - 0.5) < 1e-9
+    assert abs(gc_content("GGCCATNN") - 4 / 6) < 1e-9  # N ignored
