@@ -1,0 +1,3 @@
+[submodule "microbe-foundation"]
+	path = microbe-foundation
+	url = https://github.com/miyu-horiuchi/microbe-foundation

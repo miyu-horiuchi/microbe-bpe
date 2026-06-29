@@ -1,4 +1,5 @@
 .DS_Store
+.letta/
 node_modules/
 .env
 .env.local
@@ -7,3 +8,12 @@ __pycache__/
 .venv/
 dist/
 build/
+*.egg-info/
+
+# generated artifacts (large / reproducible)
+data/
+runs/
+results/
+*.npz
+*.meta.json
+.pytest_cache/

@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "microbe-bpe"
+version = "0.1.0"
+description = "Does the tokenization trap matter downstream? Evo2 (single-nucleotide gLM) vs domain-adaptive BPE genome representations on the microbe-foundation trait benchmark."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.26,<2",
+    "pandas>=2.0",
+    "pyarrow>=15",
+    "tqdm>=4.66",
+    "torch>=2.2",
+    "tokenizers>=0.19",
+    "transformers>=4.40,<4.58",
+    "biopython>=1.83",
+    "requests>=2.32",
+]
+
+[project.optional-dependencies]
+plot = ["matplotlib>=3.8"]
+
+[tool.setuptools.packages.find]
+include = ["microbe_bpe*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

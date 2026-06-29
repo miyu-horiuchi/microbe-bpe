@@ -1,0 +1,26 @@
+# microbe-bpe: tokenization comparison (Evo2 vs domain-BPE) on the
+# microbe-foundation downstream trait benchmark.
+#
+# This file covers the CPU-runnable parts: genome corpus building, the
+# domain-BPE / single-nucleotide TinyGPT feature extractors, and the
+# comparison driver. Evo2 itself is installed separately on a GPU box
+# (see requirements-evo2.txt / scripts/run_evo2_gpu.sh) because it needs CUDA.
+
+# --- core numerics / IO ---
+numpy>=1.26,<2
+pandas>=2.0
+pyarrow>=15
+tqdm>=4.66
+
+# --- tokenizers + tiny genome LM (domain-BPE / single-nt feature extraction) ---
+torch>=2.2
+tokenizers>=0.19
+transformers>=4.40,<4.58
+
+# --- genome fetch + protein-free DNA handling (shared with microbe-foundation) ---
+biopython>=1.83
+requests>=2.32
+python-dotenv>=1.0
+
+# --- plots for the comparison report (optional but recommended) ---
+matplotlib>=3.8
