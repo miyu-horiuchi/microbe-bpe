@@ -1,0 +1,26 @@
+{
+  "tokenizer": "domain_bpe_512",
+  "vocab_size": 512,
+  "feature_dim": 128,
+  "n_genomes": 50,
+  "window": 256,
+  "stride": 256,
+  "max_windows": 12,
+  "sampling": "even",
+  "lm": {
+    "n_windows": 372,
+    "vocab_size": 512,
+    "params": 560640,
+    "final_loss": 0.2394,
+    "steps": 2000
+  },
+  "bits_per_residue": 5.721,
+  "bits_per_residue_held_out": true,
+  "bits_per_residue_train": 0.01,
+  "zipf_exponent": 1.0047,
+  "nt_per_token": 3.9086,
+  "train_split": "train",
+  "split_level": "species",
+  "residue_matched": true,
+  "approx_residues_seen": 24576000
+}

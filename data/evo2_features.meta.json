@@ -1,0 +1,11 @@
+{
+  "mock": false,
+  "model": "evo2_7b",
+  "layer": "blocks.28.mlp.l3",
+  "pooling": "mean",
+  "feature_dim": 4096,
+  "n_genomes": 364,
+  "window": 8192,
+  "stride": 8192,
+  "max_windows": 8
+}
