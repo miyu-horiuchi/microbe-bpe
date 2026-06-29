@@ -81,7 +81,12 @@ python fetch_bacdive.py && python parse_bacdive.py && python splits.py \
   && python vocab.py && python extract_genome_accessions.py
 cd ..
 pip install -r requirements.txt          # CPU deps
-pip install -r requirements-evo2.txt     # Evo2 (GPU only; see ArcInstitute/evo2)
+# Evo2 (GPU only; Linux + Python 3.11/3.12 + Torch 2.6/2.7). flash-attn must be
+# installed before evo2 and without build isolation — it is NOT a plain -r install:
+pip install torch==2.7.1 --index-url https://download.pytorch.org/whl/cu128
+pip install flash-attn==2.8.0.post2 --no-build-isolation
+pip install evo2
+pip install -r requirements-evo2.txt     # data-side deps (see ArcInstitute/evo2)
 ```
 
 Then run the whole comparison (tune size to your budget):

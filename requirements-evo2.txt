@@ -1,15 +1,24 @@
 # Evo2 feature extraction — install ONLY on a CUDA GPU box (Lambda / RunPod /
-# Colab A100, etc). Evo2 does not run on macOS or CPU.
+# Colab A100, etc). Evo2 needs Linux (or WSL2), it does NOT run on macOS or CPU.
 #
 #   evo2_7b      -> runs in bfloat16 on any supported CUDA GPU (~15 GB)
-#   evo2_1b_base -> needs FP8 / Transformer Engine on a Hopper GPU (H100/H200)
+#   evo2_1b_base / evo2_20b / evo2_40b -> need FP8 / Transformer Engine + Hopper
 #
-# Prereqs on the box: CUDA 12.1+, a recent NVIDIA driver, and (for FP8 models)
-# NVIDIA Transformer Engine. See https://github.com/ArcInstitute/evo2 for the
-# authoritative, up-to-date install instructions; pin nothing here that the
-# upstream installer manages itself.
-
-evo2            # Arc Institute Evo 2 (pulls vortex / flash-attn as needed)
+# Box prereqs (per https://github.com/ArcInstitute/evo2 — the authoritative source):
+#   * CUDA 12.1+ (cuDNN 9.3+), recent NVIDIA driver, GCC 9+/Clang 10+
+#   * Python 3.11 or 3.12, Torch 2.6.x or 2.7.x
+#
+# IMPORTANT: flash-attn must be installed BEFORE evo2 and WITHOUT build isolation
+# (it will not resolve as a plain requirement). So this file is NOT a one-shot
+# `pip install -r`. Do, on the GPU box:
+#
+#   pip install torch==2.7.1 --index-url https://download.pytorch.org/whl/cu128
+#   pip install flash-attn==2.8.0.post2 --no-build-isolation
+#   pip install evo2
+#   # FP8 models (20B/40B/1B) also need: conda install -c conda-forge transformer-engine-torch
+#   pip install -r requirements-evo2.txt   # the lightweight data deps below
+#
+# (Everything below is just the CPU-side data plumbing this repo needs alongside Evo2.)
 numpy>=1.26,<2
 pandas>=2.0
 pyarrow>=15

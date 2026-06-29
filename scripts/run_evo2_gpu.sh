@@ -7,8 +7,13 @@
 #       python fetch_bacdive.py && python parse_bacdive.py && python splits.py \
 #         && python vocab.py && python extract_genome_accessions.py
 #   - microbe-bpe deps:        pip install -r requirements.txt
-#   - Evo2 deps (GPU only):    pip install -r requirements-evo2.txt
-#       (see https://github.com/ArcInstitute/evo2 for the authoritative install)
+#   - Evo2 (GPU only; Linux, Python 3.11/3.12, Torch 2.6/2.7). flash-attn must be
+#     installed BEFORE evo2 and without build isolation:
+#       pip install torch==2.7.1 --index-url https://download.pytorch.org/whl/cu128
+#       pip install flash-attn==2.8.0.post2 --no-build-isolation
+#       pip install evo2
+#       pip install -r requirements-evo2.txt   # data-side deps
+#     (see https://github.com/ArcInstitute/evo2 for the authoritative install)
 #
 # Tune N_GENOMES / EPOCHS / SEEDS to your budget. Start small to validate.
 set -euo pipefail
