@@ -13,11 +13,11 @@ Accessions come from microbe-foundation's extract_genome_accessions.py output
         && python vocab.py && python extract_genome_accessions.py
 
 Usage:
-    # dev subset (200 genomes, capped at 200 kb each) — minutes, laptop OK
-    python build_genome_corpus.py --limit 200
+    # full corpus, full (uncapped) genomes — the default for real runs
+    python build_genome_corpus.py
 
-    # full corpus, uncapped genomes
-    python build_genome_corpus.py --cap 0
+    # cheap dev subset (200 genomes, capped at 200 kb each) — laptop OK
+    python build_genome_corpus.py --limit 200 --cap 200000
 
     # tiny self-contained demo (no microbe-foundation data needed; feature
     # pipeline only — these ids won't join model.py's labels)
@@ -76,8 +76,10 @@ def main() -> None:
                    help="TSV with bacdive_id, accession (default: microbe-foundation's)")
     p.add_argument("--data-dir", type=Path, default=DEFAULT_DATA_DIR)
     p.add_argument("--mf-root", type=str, default=None, help="microbe-foundation checkout path")
-    p.add_argument("--cap", type=int, default=200_000,
-                   help="Max nucleotides cached per genome (0 = uncapped). Default 200kb.")
+    p.add_argument("--cap", type=int, default=0,
+                   help="Max nucleotides cached per genome (0 = uncapped, the default). "
+                        "Use a cap only for cheap dev/demo runs; full genomes let the "
+                        "even window sampler cover the whole genome.")
     p.add_argument("--limit", type=int, default=0, help="Process at most N genomes (0 = all)")
     p.add_argument("--demo", action="store_true", help="Use built-in demo accessions")
     p.add_argument("--sleep", type=float, default=0.0, help="Seconds to sleep between fetches")

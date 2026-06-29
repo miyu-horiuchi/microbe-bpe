@@ -20,8 +20,11 @@ echo "== 3. single-nucleotide control features =="
 python extract_bpe_features.py --tokenizer single_nt \
   --window 512 --stride 512 --max-windows 24 --steps 80 --d-model 128 --max-len 512
 
-echo "== 4. Evo2 MOCK features (k-mer stand-in; NOT real Evo2) =="
-python extract_evo2_features.py --mock --window 512 --stride 512 --max-windows 24
+echo "== 4. Evo2 MOCK features — mean pool (k-mer stand-in; NOT real Evo2) =="
+python extract_evo2_features.py --mock --pooling mean --window 512 --stride 512 --max-windows 24
+
+echo "== 5. Evo2 MOCK features — BPE pool (byte-pair stand-in; NOT real Evo2) =="
+python extract_evo2_features.py --mock --pooling bpe --window 512 --stride 512 --max-windows 24
 
 echo
 echo "Smoke complete. Feature files:"

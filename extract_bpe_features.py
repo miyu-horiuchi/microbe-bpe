@@ -9,18 +9,25 @@ Implements the paper's method on real microbial genomes:
   4. save data/<tokenizer>_features.npz (bacdive_ids, features) for model.py.
 
 Run it once per tokenizer (the architecture is identical; only the tokenizer
-changes), so the single-nt vs domain-BPE comparison is matched-capacity:
+changes), so the single-nt vs domain-BPE comparison is matched-capacity. This is
+the HEADLINE comparison of the experiment (Evo2 is only a far-larger reference):
 
-    python extract_bpe_features.py --tokenizer domain_bpe --bpe-vocab 1024
     python extract_bpe_features.py --tokenizer single_nt
+    python extract_bpe_features.py --tokenizer domain_bpe --bpe-vocab 1024
 
 Everything here runs on CPU (laptop OK) for a dev-sized corpus; a GPU just makes
 the LM training faster (--device cuda).
 
-Note on leakage: the genome LM is unsupervised pretraining on DNA (no trait
-labels), mirroring how Evo2 was pretrained on external genomes. We pretrain on
-all cached windows by default; pass --train-split train to restrict pretraining
-to the training genomes of a given --split-level for a stricter protocol.
+Fairness protocol (addresses the obvious confounds):
+  * Residue-matched, not just step-matched. Both tokenizers train on the SAME
+    windows for the SAME number of steps; with --window <= --max-len the single-nt
+    model is never truncated, so both models see exactly the same nucleotides.
+    The only difference is the chopping (the whole point of the paper).
+  * No test peeking. --train-split defaults to `train`: the tokenizer AND the LM
+    are fit only on the training genomes of --split-level. Features are still
+    extracted for every genome (extraction is unsupervised, no labels involved).
+  * Representative windows. We sample windows spread across the WHOLE genome
+    (--sampling even), not just the leading contigs.
 """
 
 from __future__ import annotations
@@ -53,6 +60,7 @@ def gather_windows(
     max_windows_per_genome: int,
     split: str | None,
     split_level: str | None,
+    sampling: str = "even",
 ) -> tuple[list[str], list[tuple[int, list[str]]]]:
     """Return (training_windows, [(bacdive_id, genome_windows), ...]).
 
@@ -68,7 +76,7 @@ def gather_windows(
     for row in df.itertuples():
         bid = int(row.bacdive_id)
         dna = read_dna(Path(row.path))
-        wins = window_dna(dna, window, stride, max_windows_per_genome)
+        wins = window_dna(dna, window, stride, max_windows_per_genome, sampling=sampling)
         if not wins:
             continue
         per_genome.append((bid, wins))
@@ -86,10 +94,13 @@ def main() -> None:
     p.add_argument("--bpe-vocab", type=int, default=1024, help="domain-BPE vocab size")
     p.add_argument("--data-dir", type=Path, default=DEFAULT_DATA_DIR)
     p.add_argument("--out", type=Path, default=None, help="output npz (default data/<tok>_features.npz)")
-    # windowing (shared with Evo2 extractor defaults so inputs match)
-    p.add_argument("--window", type=int, default=1024)
-    p.add_argument("--stride", type=int, default=512)
-    p.add_argument("--max-windows", type=int, default=64, help="per genome (0 = all)")
+    # windowing — keep --window <= --max-len so single-nt is never truncated
+    # (that's what makes the two tokenizers residue-matched, not just step-matched)
+    p.add_argument("--window", type=int, default=512)
+    p.add_argument("--stride", type=int, default=256)
+    p.add_argument("--max-windows", type=int, default=128, help="per genome (0 = all)")
+    p.add_argument("--sampling", choices=["even", "head"], default="even",
+                   help="even = windows spread across the whole genome (default)")
     p.add_argument("--max-train-windows", type=int, default=40_000,
                    help="cap on windows used to train tokenizer+LM (0 = all)")
     # LM
@@ -101,8 +112,9 @@ def main() -> None:
     p.add_argument("--batch-size", type=int, default=32)
     p.add_argument("--lr", type=float, default=3e-4)
     # protocol
-    p.add_argument("--train-split", choices=["train", "all"], default="all",
-                   help="pretrain LM on all genomes (default) or only the train split")
+    p.add_argument("--train-split", choices=["train", "all"], default="train",
+                   help="pretrain tokenizer+LM only on the train split (default, "
+                        "no test peeking) or on all genomes")
     p.add_argument("--split-level", choices=["species", "genus", "family"], default="family")
     p.add_argument("--device", default="auto")
     p.add_argument("--seed", type=int, default=0)
@@ -110,6 +122,15 @@ def main() -> None:
 
     random.seed(args.seed)
     np.random.seed(args.seed)
+
+    if args.window > args.max_len:
+        print(
+            f"WARNING: --window ({args.window}) > --max-len ({args.max_len}). The "
+            "single-nt model will be truncated to max-len tokens, so it sees FEWER "
+            "nucleotides per window than domain-BPE — the comparison is no longer "
+            "residue-matched. Set --window <= --max-len for a fair run.",
+            file=sys.stderr,
+        )
 
     device = (
         torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -128,7 +149,7 @@ def main() -> None:
         manifest,
         window=args.window, stride=args.stride,
         max_windows_per_genome=(args.max_windows or None),
-        split=split, split_level=args.split_level,
+        split=split, split_level=args.split_level, sampling=args.sampling,
     )
     if args.max_train_windows and len(train_pool) > args.max_train_windows:
         random.shuffle(train_pool)
@@ -189,8 +210,13 @@ def main() -> None:
         "feature_dim": int(cfg.d_model),
         "n_genomes": len(ids),
         "window": args.window, "stride": args.stride, "max_windows": args.max_windows,
+        "sampling": args.sampling,
         "lm": stats, "bits_per_residue_diag": round(float(bpr), 4),
         "train_split": args.train_split, "split_level": args.split_level,
+        # fairness bookkeeping: with window<=max_len both tokenizers see the same
+        # nucleotides over the same #steps, so they are residue-matched.
+        "residue_matched": bool(args.window <= args.max_len),
+        "approx_residues_seen": int(args.steps * args.batch_size * args.window),
     }
     out.with_suffix(".meta.json").write_text(json.dumps(meta, indent=2))
     print(f"\nwrote {out}  [{len(ids)}, {cfg.d_model}]")

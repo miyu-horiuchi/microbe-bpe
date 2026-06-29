@@ -7,15 +7,18 @@ This repo connects two prior projects:
 - [**microbe-foundation**](https://github.com/miyu-horiuchi/microbe-foundation) — a feature-agnostic, multi-task benchmark that predicts 21 microbial traits from genome features, with strict species/genus/family holdouts and a leaderboard.
 - [**BPE / "The Tokenization Trap"**](https://github.com/miyu-horiuchi/BPE) — the claim that single-residue tokenization gives protein/genome LMs a flat, non-Zipfian token distribution that starves scaling, and that *domain-adaptive BPE* restores language-like statistics and better modelling at fixed size.
 
-The paper's evidence is intrinsic (Zipf exponents, bits-per-residue, a synthetic probe). **microbe-bpe asks the downstream question:** on real microbial genomes, does the tokenizer change what a model can predict about an organism? We compare two genome representations on the same genomes and the same trait heads:
+The paper's evidence is intrinsic (Zipf exponents, bits-per-residue, a synthetic probe). **microbe-bpe asks the downstream question:** on real microbial genomes, does the tokenizer change what a model can predict about an organism? To answer that *causally*, the headline is a **matched-capacity A/B test where only the tokenizer differs**:
 
 | Method | Tokenization | Scale | Role |
 |---|---|---|---|
-| **Evo2** | single nucleotide (StripedHyena2) | 1B–40B, pretrained on 8.8T tokens | SOTA single-residue gLM reference |
-| **domain BPE** | BPE merges learned on microbial DNA | tiny TinyGPT, trained here | the tokenization-trap method |
-| single-nt (control) | single nucleotide | same TinyGPT as BPE | matched-capacity baseline |
+| **single-nt** | single nucleotide | tiny TinyGPT, trained here | **headline control** |
+| **domain BPE** | BPE merges learned on microbial DNA | **same TinyGPT, same training** | **headline method** (the tokenization-trap claim) |
+| Evo2 (mean) | single nucleotide (StripedHyena2) | 1B–40B, pretrained on 8.8T tokens | reference ceiling (single-residue) |
+| Evo2-BPE | Evo2 embeddings pooled along BPE word boundaries | same Evo2 | reference: does BPE composition help a single-nt model? |
 
-The single-nt TinyGPT control isolates *tokenization at matched capacity* (only the tokenizer changes); Evo2 is the heavyweight single-nucleotide reference. The headline comparison the task asks for is **Evo2 vs domain-BPE**.
+Because `single-nt` and `domain BPE` share the same architecture, the same windows, and **residue-matched** training (see below), the *only* difference between them is how the DNA is chopped — so any downstream gap is attributable to tokenization, not scale/data/architecture. Evo2 (billions of params, 8.8T-token pretraining) is reported as a *reference*, never as a controlled comparison.
+
+**Evo2-BPE** is the same Evo2 forward pass, but instead of averaging its per-nucleotide embeddings, we mean-pool them *within each domain-BPE token span* and then over tokens — so Evo2's representation is composed at "word" granularity. It isolates whether BPE-style composition helps even a model trained per-nucleotide (mirrors the paper's "pool along BPE merge boundaries" proposal).
 
 > ⚠️ **Evo2 needs a CUDA GPU** (it will not run on macOS/CPU). `evo2_7b` runs in bfloat16 on any supported CUDA GPU (~15 GB); `evo2_1b_base` needs FP8/Transformer Engine on a Hopper GPU. Everything else (corpus build, BPE/single-nt feature extraction, the comparison driver) runs on a laptop. A CPU `--mock` stand-in lets you dry-run the full pipeline before renting a GPU.
 
@@ -32,8 +35,8 @@ microbe-foundation (git submodule)             microbe-bpe (this repo)
                                        ┌────────────────────┴─────────────────────┐
                             extract_bpe_features.py                    extract_evo2_features.py
                             (domain BPE + single-nt TinyGPT)           (Evo2 on GPU, or --mock)
-                              └─▶ data/domain_bpe_*_features.npz          └─▶ data/evo2_features.npz
-                                  data/single_nt_features.npz
+                              └─▶ data/domain_bpe_*_features.npz          ├─▶ data/evo2_features.npz      (--pooling mean)
+                                  data/single_nt_features.npz             └─▶ data/evo2_bpe_features.npz  (--pooling bpe)
                                                             │
                                                   run_comparison.py
                                        (runs microbe-foundation model.py per
@@ -66,7 +69,7 @@ this repo with `git clone --recurse-submodules <url>` to get it in one step.
 bash scripts/run_smoke.sh
 ```
 
-Builds a tiny demo corpus (6 reference genomes), trains the domain-BPE and single-nt TinyGPTs, and writes a **mock** Evo2 feature file — proving the pipeline end-to-end. The demo `bacdive_id`s are synthetic, so they don't join microbe-foundation's labels; the downstream `model.py` step needs the real corpus below.
+Builds a tiny demo corpus (6 reference genomes), trains the single-nt and domain-BPE TinyGPTs, and writes **mock** Evo2 feature files (mean + BPE pooling) — proving the pipeline end-to-end. The demo `bacdive_id`s are synthetic, so they don't join microbe-foundation's labels; the downstream `model.py` step needs the real corpus below.
 
 ### 2. Real comparison (on a CUDA GPU box)
 
@@ -90,33 +93,40 @@ N_GENOMES=500 EPOCHS=30 SEEDS="0 1 2" bash scripts/run_evo2_gpu.sh
 or step by step:
 
 ```bash
-python build_genome_corpus.py --limit 500 --cap 200000
-python extract_bpe_features.py --tokenizer domain_bpe --bpe-vocab 1024 --device cuda
-python extract_bpe_features.py --tokenizer single_nt --device cuda
-python extract_evo2_features.py --model evo2_7b --layer blocks.28.mlp.l3
+python build_genome_corpus.py --limit 500          # full (uncapped) genomes
+# headline pair — note --window <= --max-len keeps them residue-matched, and
+# --train-split train (the default) means no test genomes leak into pretraining:
+python extract_bpe_features.py --tokenizer single_nt  --window 512 --max-len 512 --steps 1500 --device cuda
+python extract_bpe_features.py --tokenizer domain_bpe --bpe-vocab 1024 --window 512 --max-len 512 --steps 1500 --device cuda
+# references (Evo2):
+python extract_evo2_features.py --pooling mean --model evo2_7b --layer blocks.28.mlp.l3
+python extract_evo2_features.py --pooling bpe  --model evo2_7b --layer blocks.28.mlp.l3
 python run_comparison.py --epochs 30 --splits species genus family --seeds 0 1 2
 ```
 
-Outputs land in `results/comparison.md` (Evo2-vs-BPE head-to-head) and `results/leaderboard.md` (microbe-foundation's leaderboard over all runs).
+Outputs land in `results/comparison.md` (headline `single_nt` vs `domain_bpe`, plus Evo2 references) and `results/leaderboard.md` (microbe-foundation's leaderboard over all runs).
 
 ---
 
 ## What the comparison reports
 
-- **Mean per-head test score** for each method on each split (species/genus/family), seed-averaged.
-- **Per-head Δ (domain-BPE − Evo2)** so you can see *which traits* the tokenizer choice helps — the paper predicts the gap concentrates on motif/k-mer-decided ("machinery") phenotypes and shrinks under covariate shift.
+- **Mean per-head test score** for each method on each split (species/genus/family), reported as **mean ± std over seeds** so you can see the noise floor.
+- **Headline contrast Δ(domain_bpe − single_nt) by trait class**: the per-head gap, aggregated over *machinery* traits (gene-content / functional: pathogenicity, AMR, cultivation, metabolites…) vs *compositional* traits (bulk-sequence: gram stain, oxygen, temperature…). The paper predicts any tokenization benefit concentrates on machinery phenotypes — averaging all 21 heads together would wash that out, so we break it out. A two-sided **Wilcoxon signed-rank p-value** across the heads in each class is reported when `scipy` is installed and there are ≥6 heads.
+- **Full per-head table** for the headline pair (plus the Evo2 references) on the species split.
 - microbe-foundation's standard **leaderboard** ranking every run.
 
-A bonus bits-per-residue diagnostic is logged in each BPE/single-nt `*.meta.json` (the paper's intrinsic metric), though the headline result here is downstream trait F1.
+A bonus bits-per-residue diagnostic (the paper's intrinsic compression metric) is logged in each BPE/single-nt `*.meta.json`, alongside `residue_matched` and `approx_residues_seen` for auditing fairness — though the headline result here is downstream trait prediction.
 
 ---
 
 ## Honest framing
 
-- **Capacity is not matched between Evo2 and BPE.** Evo2 is a multi-billion-parameter model pretrained on 8.8T tokens; the domain-BPE model is a tiny from-scratch TinyGPT. The fair tokenization-only test is **single-nt TinyGPT vs domain-BPE TinyGPT** (matched capacity); Evo2 is the SOTA single-nt *reference ceiling*. Read all three together.
-- **Frozen features, linear-ish heads.** Both representations are frozen and fed to microbe-foundation's MLP heads, so we measure representational content, not end-to-end finetuning.
-- **Unsupervised pretraining.** The TinyGPTs are pretrained on genome DNA (no trait labels), mirroring Evo2's external pretraining. Use `--train-split train` for a stricter no-leakage protocol that pretrains only on the training genomes of a split.
-- **Genomes are length-capped** (default 200 kb) for tractable dev runs; pass `--cap 0` for full genomes.
+- **The headline test is matched-capacity and residue-matched.** `single_nt` and `domain_bpe` are the *same* TinyGPT trained on the *same* windows for the *same* number of steps. Keeping `--window <= --max-len` means the single-nt model is never truncated, so both tokenizers see exactly the same nucleotides — they just chop them differently. The only confound left is the tokenizer, which is the point.
+- **Evo2 is a reference, not a control.** It is a multi-billion-parameter model pretrained on 8.8T tokens, so any Evo2-vs-TinyGPT gap mixes scale + data + architecture with tokenization. We report it as a ceiling, never as a clean comparison.
+- **No test peeking.** `--train-split train` is the **default**: both the BPE merges and the LM are fit only on the training genomes of `--split-level`. Features are still extracted for all genomes (extraction is unsupervised — no labels involved).
+- **Representative windows, full genomes.** Genomes are cached uncapped by default and windows are sampled *evenly across the whole genome* (`--sampling even`), not just the leading contigs. Use `--cap`/`--sampling head` only for cheap dev runs.
+- **Frozen features.** Both representations are frozen and fed to microbe-foundation's MLP heads, so we measure representational content, not end-to-end finetuning.
+- **Expect a weak signal.** A tiny LM over raw DNA windows is a screening-grade representation; treat absolute numbers as directional and lean on the per-trait-class Δ and seed error bars, plus the intrinsic bits-per-residue diagnostic.
 
 ## Repository layout
 

@@ -20,22 +20,36 @@ SEEDS="${SEEDS:-0 1 2}"
 EVO2_MODEL="${EVO2_MODEL:-evo2_7b}"
 EVO2_LAYER="${EVO2_LAYER:-blocks.28.mlp.l3}"
 
-echo "== 1. shared genome corpus ($N_GENOMES genomes) =="
-python build_genome_corpus.py --limit "$N_GENOMES" --cap 200000
+# Fairness knobs for the headline pair (single_nt vs domain_bpe):
+#   WINDOW <= MAXLEN  -> single-nt is never truncated, so both tokenizers see the
+#                        same nucleotides over the same #steps (residue-matched).
+WINDOW="${WINDOW:-512}"
+MAXLEN="${MAXLEN:-512}"
+MAXWIN="${MAXWIN:-128}"
+STEPS="${STEPS:-1500}"
 
-echo "== 2. domain-BPE features =="
-python extract_bpe_features.py --tokenizer domain_bpe --bpe-vocab 1024 \
-  --window 1024 --stride 512 --max-windows 64 --steps 800 --device cuda
+echo "== 1. shared genome corpus ($N_GENOMES genomes, FULL/uncapped) =="
+python build_genome_corpus.py --limit "$N_GENOMES"
 
-echo "== 3. single-nucleotide control features =="
+echo "== 2. single-nucleotide control features (train-split only) =="
 python extract_bpe_features.py --tokenizer single_nt \
-  --window 1024 --stride 512 --max-windows 64 --steps 800 --device cuda
+  --window "$WINDOW" --max-len "$MAXLEN" --stride $((WINDOW/2)) --max-windows "$MAXWIN" \
+  --steps "$STEPS" --device cuda
 
-echo "== 4. Evo2 features ($EVO2_MODEL, layer $EVO2_LAYER) =="
-python extract_evo2_features.py --model "$EVO2_MODEL" --layer "$EVO2_LAYER" \
+echo "== 3. domain-BPE features (train-split only) =="
+python extract_bpe_features.py --tokenizer domain_bpe --bpe-vocab 1024 \
+  --window "$WINDOW" --max-len "$MAXLEN" --stride $((WINDOW/2)) --max-windows "$MAXWIN" \
+  --steps "$STEPS" --device cuda
+
+echo "== 4a. Evo2 features — mean pool ($EVO2_MODEL, layer $EVO2_LAYER) =="
+python extract_evo2_features.py --pooling mean --model "$EVO2_MODEL" --layer "$EVO2_LAYER" \
   --window 8192 --stride 8192 --max-windows 16
 
-echo "== 5. downstream comparison (Evo2 vs domain-BPE vs single-nt) =="
+echo "== 4b. Evo2 features — BPE-boundary pool (byte-pair embeds of Evo2) =="
+python extract_evo2_features.py --pooling bpe --model "$EVO2_MODEL" --layer "$EVO2_LAYER" \
+  --window 8192 --stride 8192 --max-windows 16
+
+echo "== 5. downstream comparison (headline: single_nt vs domain_bpe; Evo2 as reference) =="
 python run_comparison.py --epochs "$EPOCHS" --splits species genus family --seeds $SEEDS
 
 echo

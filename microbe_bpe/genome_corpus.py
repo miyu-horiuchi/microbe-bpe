@@ -45,18 +45,35 @@ def contigs_to_genome(contigs: list[tuple[str, str]], cap: int | None) -> str:
     return genome
 
 
-def window_dna(dna: str, window: int, stride: int, max_windows: int | None) -> list[str]:
-    """Slice a genome into overlapping windows. Used by both extractors."""
+def window_dna(
+    dna: str,
+    window: int,
+    stride: int,
+    max_windows: int | None,
+    sampling: str = "even",
+) -> list[str]:
+    """Slice a genome into overlapping windows, used by both extractors.
+
+    When more windows are available than `max_windows`, the selection matters:
+      - sampling="even" (default): pick windows spread uniformly across the WHOLE
+        genome, so the sample is representative (a trait's genes can sit anywhere).
+      - sampling="head": take the first windows (legacy; biases to the assembly's
+        leading contigs — avoid for real runs).
+    """
     if not dna:
         return []
     if len(dna) <= window:
         return [dna]
-    out: list[str] = []
-    for i in range(0, len(dna) - window + 1, stride):
-        out.append(dna[i : i + window])
-        if max_windows and len(out) >= max_windows:
-            break
-    return out
+    starts = list(range(0, len(dna) - window + 1, stride))
+    if max_windows and len(starts) > max_windows:
+        if sampling == "head":
+            starts = starts[:max_windows]
+        elif max_windows == 1:
+            starts = [starts[len(starts) // 2]]
+        else:
+            picks = {round(k * (len(starts) - 1) / (max_windows - 1)) for k in range(max_windows)}
+            starts = [starts[i] for i in sorted(picks)]
+    return [dna[s : s + window] for s in starts]
 
 
 # --------------------------------------------------------------------------- #

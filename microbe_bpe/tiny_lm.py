@@ -181,6 +181,28 @@ def genome_embedding(
     return vec.astype(np.float32)
 
 
+def bpe_pool(positions: np.ndarray, offsets: list[tuple[int, int]]) -> np.ndarray:
+    """Pool per-position embeddings along BPE token boundaries.
+
+    `positions` is [L, D] — one embedding per nucleotide (e.g. from Evo2).
+    `offsets` are (start, end) char spans per BPE token. We mean-pool within
+    each token's span (so each BPE "word" gets one vector regardless of length),
+    then mean over tokens -> [D]. This is the "byte-pair embeds" composition of a
+    single-nucleotide model: aggregate by word, not by letter.
+    """
+    if positions.ndim != 2:
+        raise ValueError("positions must be [L, D]")
+    L, D = positions.shape
+    tok_vecs: list[np.ndarray] = []
+    for s, e in offsets:
+        s2, e2 = min(max(s, 0), L), min(max(e, 0), L)
+        if e2 > s2:
+            tok_vecs.append(positions[s2:e2].mean(axis=0))
+    if not tok_vecs:
+        return positions.mean(axis=0) if L else np.zeros(D, dtype=positions.dtype)
+    return np.stack(tok_vecs).mean(axis=0)
+
+
 @torch.no_grad()
 def eval_bits_per_residue(
     model: TinyGPT, tokenizer, windows: list[str],

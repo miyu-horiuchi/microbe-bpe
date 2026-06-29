@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 """Step 4 — run the downstream comparison and summarize.
 
-For each feature set (Evo2, domain-BPE, single-nt) x split (species/genus/family)
-x seed, this drives microbe-foundation's model.py to train the 21-head trait
-model on those frozen genome features, saving per-run metrics. It then calls
-microbe-foundation's leaderboard.py and writes a focused head-to-head summary:
-Evo2 (single-nucleotide gLM) vs domain-BPE (the tokenization-trap method).
+For each feature set (single-nt, domain-BPE, Evo2[, Evo2-BPE]) x split
+(species/genus/family) x seed, this drives microbe-foundation's model.py to train
+the 21-head trait model on those frozen genome features, saving per-run metrics.
+It then calls microbe-foundation's leaderboard.py and writes a summary whose
+HEADLINE is the matched-capacity pair `single_nt` vs `domain_bpe` (only the
+tokenizer differs); the Evo2 arms are reported as a larger single-nt reference.
+The summary reports mean ± std over seeds and a per-trait-class breakdown so the
+tokenization effect isn't washed out by averaging unrelated heads.
 
 Usage (after build_genome_corpus.py + the two extractors):
     python run_comparison.py --epochs 30 --splits species genus family --seeds 0 1 2
@@ -86,6 +89,44 @@ def mean_score(per_head: dict) -> tuple[float, int]:
     return (sum(vals) / len(vals), len(vals)) if vals else (float("nan"), 0)
 
 
+# Coarse trait taxonomy for the headline contrast. "machinery" traits encode
+# gene content / functional machinery (where richer DNA tokens *might* help);
+# "compositional" traits are closer to bulk sequence composition. We match on
+# substrings of the head name so it's robust to the exact schema names.
+MACHINERY_KEYS = (
+    "pathogen", "medium", "cultivation", "carbon", "metabolite", "substrate",
+    "amr", "resist", "antibiotic", "biosafety", "fame", "fatty", "enzyme",
+)
+COMPOSITIONAL_KEYS = (
+    "gram", "shape", "motil", "spor", "oxygen", "aerob", "catalase", "oxidase",
+    "temperature", "temp", "ph_", "halo", "salin", "pigment", "gc_",
+)
+
+
+def trait_class(head: str) -> str:
+    h = head.lower()
+    if any(k in h for k in MACHINERY_KEYS):
+        return "machinery"
+    if any(k in h for k in COMPOSITIONAL_KEYS):
+        return "compositional"
+    return "other"
+
+
+def _wilcoxon(deltas: list[float]):
+    """Two-sided Wilcoxon signed-rank p-value for deltas != 0 (None if unavailable)."""
+    nz = [d for d in deltas if d != 0]
+    if len(nz) < 6:
+        return None
+    try:
+        from scipy.stats import wilcoxon  # optional dependency
+    except Exception:
+        return None
+    try:
+        return float(wilcoxon(nz).pvalue)
+    except Exception:
+        return None
+
+
 def summarize(run_paths: list[Path]) -> None:
     runs = []
     for p in run_paths:
@@ -109,62 +150,115 @@ def summarize(run_paths: list[Path]) -> None:
     methods = sorted(agg)
     splits = ["species", "genus", "family"]
     present_splits = [s for s in splits if any(s in agg[m] for m in methods)]
-
-    lines = ["# Evo2 vs domain-BPE — downstream trait comparison", ""]
-    lines.append("Mean per-head test score (higher is better; rmse heads excluded), "
-                 "averaged over seeds. Each genome is represented by frozen features "
-                 "from the named method and scored on microbe-foundation's 21-head model.")
-    lines.append("")
-    lines.append("## Mean score by method x split")
-    lines.append("")
-    lines.append("| Method | " + " | ".join(present_splits) + " |")
-    lines.append("|---|" + "---:|" * len(present_splits))
-    for m in methods:
-        cells = [f"`{m}`"]
-        for s in present_splits:
-            entries = agg[m].get(s, [])
-            scores = [ms for ms, _ in entries if ms == ms]  # drop nan
-            cells.append(f"{statistics.mean(scores):.4f}" if scores else "—")
-        lines.append("| " + " | ".join(cells) + " |")
-    lines.append("")
-
-    # Head-level delta: domain-BPE vs Evo2 (real or _MOCK), species split if present.
-    bpe = next((m for m in methods if m.startswith("domain_bpe")), None)
-    evo = next((m for m in methods if m.startswith("evo2")), None)
-    delta_split = "species" if "species" in present_splits else (
-        present_splits[0] if present_splits else None)
+    n_seeds = max((len(agg[m].get(s, [])) for m in methods for s in present_splits), default=0)
 
     def head_means(method: str, split: str):
+        """Seed-averaged per-head score + metric kind for a method/split."""
         acc: dict[str, list[float]] = {}
         kinds: dict[str, str] = {}
-        for _ms, ph in agg[method].get(split, []):
+        for _ms, ph in agg.get(method, {}).get(split, []):
             for h, e in ph.items():
                 acc.setdefault(h, []).append(e["score"])
                 kinds[h] = e.get("metric_kind", "?")
         return {h: sum(v) / len(v) for h, v in acc.items()}, kinds
 
-    if bpe and evo and delta_split:
-        lines.append(f"## Per-head delta (domain-BPE − Evo2), {delta_split} split, seed-averaged")
+    # The headline test is the matched-capacity pair: only the tokenizer differs.
+    bpe = next((m for m in methods if m.startswith("domain_bpe")), None)
+    nt = next((m for m in methods if m.startswith("single_nt")), None)
+    evo = next((m for m in methods if m.startswith("evo2") and not m.startswith("evo2_bpe")), None)
+    evo_bpe = next((m for m in methods if m.startswith("evo2_bpe")), None)
+
+    lines = ["# Tokenization-trap downstream test — trait prediction", ""]
+    lines.append(
+        "Each genome is frozen into features by the named method, then scored on "
+        "microbe-foundation's 21-head trait model. **Headline comparison:** "
+        "`single_nt` vs `domain_bpe` — same TinyGPT, residue-matched training, "
+        "only the tokenizer differs. Evo2 arms are a far-larger single-nucleotide "
+        "*reference*, not a matched control.")
+    lines.append("")
+    lines.append(f"Seeds per cell: {n_seeds} (± is std over seeds). "
+                 "Scores are mean per-head test score, higher is better, rmse heads excluded.")
+    lines.append("")
+
+    role = {}
+    if nt: role[nt] = "headline control (single nucleotide)"
+    if bpe: role[bpe] = "headline method (domain BPE)"
+    if evo: role[evo] = "reference (Evo2, single-nt, ~billions params)"
+    if evo_bpe: role[evo_bpe] = "reference (Evo2 embeddings pooled by BPE spans)"
+
+    lines.append("## Mean score by method x split")
+    lines.append("")
+    lines.append("| Method | role | " + " | ".join(present_splits) + " |")
+    lines.append("|---|---|" + "---:|" * len(present_splits))
+    for m in methods:
+        cells = [f"`{m}`", role.get(m, "—")]
+        for s in present_splits:
+            scores = [ms for ms, _ in agg[m].get(s, []) if ms == ms]  # drop nan
+            if not scores:
+                cells.append("—")
+            elif len(scores) >= 2:
+                cells.append(f"{statistics.mean(scores):.4f} ± {statistics.stdev(scores):.4f}")
+            else:
+                cells.append(f"{scores[0]:.4f}")
+        lines.append("| " + " | ".join(cells) + " |")
+    lines.append("")
+
+    # Headline contrast by trait class: does richer tokenization help, and where?
+    if bpe and nt:
+        lines.append("## Headline contrast Δ(domain_bpe − single_nt) by trait class")
         lines.append("")
-        lines.append("| Head | metric | Evo2 | domain-BPE | Δ (BPE−Evo2) |")
+        lines.append("Mean Δ over the non-rmse heads in each class (± std across heads); "
+                     "p = two-sided Wilcoxon signed-rank over those heads (needs scipy & ≥6 heads).")
+        lines.append("")
+        lines.append("| Split | trait class | n heads | mean Δ | p |")
         lines.append("|---|---|---:|---:|---:|")
-        evo_m, kinds = head_means(evo, delta_split)
-        bpe_m, _ = head_means(bpe, delta_split)
-        for h in sorted(set(evo_m) | set(bpe_m)):
-            e = evo_m.get(h)
-            b = bpe_m.get(h)
-            d = (b - e) if (e is not None and b is not None) else None
-            e_s = f"{e:.4f}" if e is not None else "—"
-            b_s = f"{b:.4f}" if b is not None else "—"
-            d_s = f"{d:+.4f}" if d is not None else "—"
-            lines.append(f"| `{h}` | {kinds.get(h, '?')} | {e_s} | {b_s} | {d_s} |")
+        for s in present_splits:
+            bpe_m, kinds = head_means(bpe, s)
+            nt_m, _ = head_means(nt, s)
+            by_class: dict[str, list[float]] = {}
+            for h in set(bpe_m) & set(nt_m):
+                if kinds.get(h) == "rmse":
+                    continue
+                by_class.setdefault(trait_class(h), []).append(bpe_m[h] - nt_m[h])
+            for cls in ("machinery", "compositional", "other", "all"):
+                d = (sum(by_class.values(), []) if cls == "all" else by_class.get(cls, []))
+                if not d:
+                    continue
+                mu = statistics.mean(d)
+                sd = statistics.stdev(d) if len(d) >= 2 else 0.0
+                p = _wilcoxon(d)
+                p_s = f"{p:.3f}" if p is not None else "—"
+                lines.append(f"| {s} | {cls} | {len(d)} | {mu:+.4f} ± {sd:.4f} | {p_s} |")
+        lines.append("")
+
+    # Full per-head table for the headline pair (+ references), species split if present.
+    delta_split = "species" if "species" in present_splits else (
+        present_splits[0] if present_splits else None)
+    ref_methods = [m for m in (nt, bpe, evo, evo_bpe) if m]
+    if delta_split and nt and bpe:
+        lines.append(f"## Per-head scores, {delta_split} split, seed-averaged")
+        lines.append("")
+        header = ["Head", "class", "metric"] + [f"`{m}`" for m in ref_methods] + ["Δ(bpe−nt)"]
+        lines.append("| " + " | ".join(header) + " |")
+        lines.append("|---|---|---|" + "---:|" * (len(ref_methods) + 1))
+        means = {m: head_means(m, delta_split)[0] for m in ref_methods}
+        _, kinds = head_means(bpe, delta_split)
+        all_heads = sorted(set().union(*[set(means[m]) for m in ref_methods]))
+        for h in all_heads:
+            row = [f"`{h}`", trait_class(h), kinds.get(h, "?")]
+            for m in ref_methods:
+                v = means[m].get(h)
+                row.append(f"{v:.4f}" if v is not None else "—")
+            dv = (means[bpe].get(h), means[nt].get(h))
+            row.append(f"{dv[0]-dv[1]:+.4f}" if None not in dv else "—")
+            lines.append("| " + " | ".join(row) + " |")
         lines.append("")
 
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     out = RESULTS_DIR / "comparison.md"
     out.write_text("\n".join(lines) + "\n")
     print(f"\nwrote {out}")
-    print("\n".join(lines[:12]))
+    print("\n".join(lines[:14]))
 
 
 def main() -> None:

@@ -37,11 +37,19 @@ def test_normalize_and_concat():
 
 
 def test_window_dna():
-    dna = "ACGT" * 100  # 400 bp
+    rng = random.Random(0)
+    dna = "".join(rng.choice("ACGT") for _ in range(400))  # non-periodic, distinct windows
     wins = window_dna(dna, window=100, stride=50, max_windows=None)
     assert all(len(w) == 100 for w in wins)
-    assert len(wins) == (400 - 100) // 50 + 1
-    assert window_dna(dna, 100, 50, max_windows=3) == wins[:3]
+    assert len(wins) == (400 - 100) // 50 + 1  # starts 0,50,...,300 -> 7 windows
+    # legacy "head" sampling = first N windows (prefix)
+    assert window_dna(dna, 100, 50, max_windows=3, sampling="head") == wins[:3]
+    # default "even" sampling spreads across the WHOLE genome: starts 0,150,300
+    even = window_dna(dna, 100, 50, max_windows=3)
+    assert len(even) == 3
+    assert even[0] == dna[0:100]
+    assert even[1] == dna[150:250]
+    assert even[2] == dna[300:400]
     assert window_dna("ACGTACGT", 100, 50, None) == ["ACGTACGT"]  # short genome
     assert window_dna("", 100, 50, None) == []
 
@@ -84,3 +92,41 @@ def test_kmer_mock_vector():
     v = _kmer_vector("ACGT" * 50, k=4)
     assert v.shape == (256,)
     assert abs(float(v.sum()) - 1.0) < 1e-5  # normalized frequencies
+
+
+def test_bpe_pool_aggregates_by_token():
+    from microbe_bpe.tiny_lm import bpe_pool
+
+    # per-position embeddings (L=4, D=1): rows 0,2,4,6
+    positions = np.array([[0.0], [2.0], [4.0], [6.0]], dtype=np.float32)
+    # two BPE tokens spanning bases [0:2) and [2:4)
+    offsets = [(0, 2), (2, 4)]
+    out = bpe_pool(positions, offsets)
+    # token means: (0+2)/2=1, (4+6)/2=5 ; mean over tokens = 3
+    assert out.shape == (1,)
+    assert abs(float(out[0]) - 3.0) < 1e-6
+    # out-of-range spans are clamped; empty offsets fall back to global mean
+    assert abs(float(bpe_pool(positions, [])[0]) - 3.0) < 1e-6
+
+
+def test_bpe_offsets_cover_sequence():
+    seqs = [_random_dna(400, seed=i) for i in range(30)]
+    tok = DomainBPETrainer(vocab_size=200).train_on_sequences(seqs, name="domain_bpe_200")
+    seq = seqs[0]
+    ids, offsets = tok.encode_with_offsets(seq)
+    assert len(ids) == len(offsets)
+    # byte-level offsets are contiguous and cover the whole sequence
+    assert offsets[0][0] == 0
+    assert offsets[-1][1] == len(seq)
+    for (s, e), (ns, _ne) in zip(offsets, offsets[1:]):
+        assert e == ns  # contiguous
+
+
+def test_bpe_bag_mock_vector():
+    from extract_evo2_features import _bpe_bag_vector
+
+    seqs = [_random_dna(300, seed=i) for i in range(20)]
+    tok = DomainBPETrainer(vocab_size=128).train_on_sequences(seqs, name="domain_bpe_128")
+    v = _bpe_bag_vector(seqs[0], tok)
+    assert v.shape == (tok.vocab_size,)
+    assert abs(float(v.sum()) - 1.0) < 1e-5

@@ -85,6 +85,16 @@ class HuggingFaceBPETokenizer:
     def encode(self, sequence: str) -> list[int]:
         return self.tokenizer.encode(sequence).ids
 
+    def encode_with_offsets(self, sequence: str) -> tuple[list[int], list[tuple[int, int]]]:
+        """Return (ids, char-offsets). offsets[i] = (start, end) into `sequence`.
+
+        Used to pool a single-nucleotide model's per-position embeddings along
+        this tokenizer's BPE merge boundaries (each token spans end-start bases).
+        ByteLevel pre-tokenization on ASCII ACGTN keeps offsets in raw-char units.
+        """
+        enc = self.tokenizer.encode(sequence)
+        return enc.ids, list(enc.offsets)
+
     def decode(self, ids: list[int]) -> str:
         return self.tokenizer.decode(ids, skip_special_tokens=True)
 
